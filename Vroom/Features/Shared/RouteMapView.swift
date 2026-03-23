@@ -5,25 +5,41 @@ enum RouteMapMode: Sendable, Hashable {
     case idle
     case live
     case completed
-    case replay(progress: Double)
+    case replay(playhead: ReplayMapPlayhead?)
+}
+
+enum RouteMapCameraMode: Sendable, Hashable {
+    case fitRoute
+    case followLatest
+    case followReplay
+    case manual
 }
 
 struct RouteMapView: UIViewRepresentable {
     let trace: [RoutePointSample]
     let events: [DrivingEvent]
     let mode: RouteMapMode
+    let cameraMode: RouteMapCameraMode
     let style: AppMapStyle
+    let bottomPadding: CGFloat
+    var onCameraModeChange: ((RouteMapCameraMode) -> Void)?
 
     init(
         trace: [RoutePointSample],
         events: [DrivingEvent],
         mode: RouteMapMode,
-        style: AppMapStyle = .standard
+        cameraMode: RouteMapCameraMode,
+        style: AppMapStyle = .standard,
+        bottomPadding: CGFloat = 120,
+        onCameraModeChange: ((RouteMapCameraMode) -> Void)? = nil
     ) {
         self.trace = trace
         self.events = events
         self.mode = mode
+        self.cameraMode = cameraMode
         self.style = style
+        self.bottomPadding = bottomPadding
+        self.onCameraModeChange = onCameraModeChange
     }
 
     func makeCoordinator() -> Coordinator {
@@ -37,24 +53,28 @@ struct RouteMapView: UIViewRepresentable {
         mapView.showsCompass = false
         mapView.showsScale = false
         mapView.isPitchEnabled = true
-        mapView.layoutMargins = UIEdgeInsets(top: 60, left: 24, bottom: 60, right: 24)
+        mapView.layoutMargins = UIEdgeInsets(top: 72, left: 20, bottom: max(84, bottomPadding), right: 20)
         return mapView
     }
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
+        context.coordinator.onCameraModeChange = onCameraModeChange
         context.coordinator.apply(
             presentation: RoutePresentationBuilder.build(
                 trace: trace,
                 events: events,
-                replayProgress: {
-                    if case .replay(let progress) = mode {
-                        return progress
+                replayProgress: nil,
+                replayPlayhead: {
+                    if case .replay(let playhead) = mode {
+                        return playhead
                     }
                     return nil
                 }()
             ),
             mode: mode,
+            cameraMode: cameraMode,
             style: style,
+            bottomPadding: bottomPadding,
             to: mapView
         )
     }
@@ -63,19 +83,27 @@ struct RouteMapView: UIViewRepresentable {
 extension RouteMapView {
     @MainActor
     final class Coordinator: NSObject, MKMapViewDelegate {
+        var onCameraModeChange: ((RouteMapCameraMode) -> Void)?
+
         private var lastStaticSignature: RouteMapStaticSignature?
         private var lastDynamicSignature: RouteMapDynamicSignature?
         private var lastStyle: AppMapStyle?
-        private var userInterruptedLiveCamera = false
         private var replayAnnotation: RouteAnnotation?
+        private var isProgrammaticCameraChange = false
+        private var lastFitSignature: RouteMapFitSignature?
+        private var idleFallbackApplied = false
 
         func apply(
             presentation: RoutePresentation,
             mode: RouteMapMode,
+            cameraMode: RouteMapCameraMode,
             style: AppMapStyle,
+            bottomPadding: CGFloat,
             to mapView: MKMapView
         ) {
+            mapView.layoutMargins = UIEdgeInsets(top: 72, left: 20, bottom: max(84, bottomPadding), right: 20)
             applyStyle(style, to: mapView)
+
             let staticSignature = RouteMapStaticSignature(
                 path: presentation.path,
                 markers: presentation.markers.filter { marker in
@@ -85,24 +113,35 @@ extension RouteMapView {
                     return true
                 }
             )
-            let dynamicSignature = RouteMapDynamicSignature(mode: mode, highlight: presentation.highlightedCoordinate)
+            let dynamicSignature = RouteMapDynamicSignature(
+                mode: mode.kind,
+                cameraMode: cameraMode,
+                lastCoordinate: presentation.path.last,
+                highlight: presentation.highlightedCoordinate,
+                bottomPadding: bottomPadding
+            )
 
             if staticSignature != lastStaticSignature {
                 lastStaticSignature = staticSignature
+                lastFitSignature = nil
+                idleFallbackApplied = false
                 renderStaticRoute(presentation, on: mapView)
             }
+
             if dynamicSignature != lastDynamicSignature {
                 lastDynamicSignature = dynamicSignature
                 updateReplayMarker(for: presentation, on: mapView)
-                updateCamera(for: presentation, mode: mode, on: mapView)
+                updateCamera(for: presentation, mode: mode, cameraMode: cameraMode, bottomPadding: bottomPadding, on: mapView)
             }
         }
 
         func mapView(_ mapView: MKMapView, regionWillChangeAnimated animated: Bool) {
-            if animated {
-                return
-            }
-            userInterruptedLiveCamera = true
+            guard !isProgrammaticCameraChange, isUserInteraction(in: mapView) else { return }
+            onCameraModeChange?(.manual)
+        }
+
+        func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            isProgrammaticCameraChange = false
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
@@ -137,7 +176,7 @@ extension RouteMapView {
             if let polyline = overlay as? MKPolyline {
                 let renderer = MKPolylineRenderer(polyline: polyline)
                 renderer.strokeColor = UIColor(RoadTheme.electricBlue)
-                renderer.lineWidth = 5
+                renderer.lineWidth = 4.5
                 renderer.lineCap = .round
                 renderer.lineJoin = .round
                 return renderer
@@ -174,9 +213,7 @@ extension RouteMapView {
                     return false
                 }
                 return true
-            }.map { marker in
-                RouteAnnotation(marker: marker)
-            }
+            }.map(RouteAnnotation.init)
             mapView.addAnnotations(annotations)
         }
 
@@ -208,43 +245,107 @@ extension RouteMapView {
         private func updateCamera(
             for presentation: RoutePresentation,
             mode: RouteMapMode,
+            cameraMode: RouteMapCameraMode,
+            bottomPadding: CGFloat,
             on mapView: MKMapView
         ) {
             guard !presentation.path.isEmpty else {
-                let fallback = MKCoordinateRegion(
-                    center: CLLocationCoordinate2D(latitude: 34.0522, longitude: -118.2437),
-                    span: MKCoordinateSpan(latitudeDelta: 0.35, longitudeDelta: 0.35)
-                )
-                mapView.setRegion(fallback, animated: false)
+                if case .idle = mode, !idleFallbackApplied {
+                    idleFallbackApplied = true
+                    setRegion(
+                        MKCoordinateRegion(
+                            center: CLLocationCoordinate2D(latitude: 34.0522, longitude: -118.2437),
+                            span: MKCoordinateSpan(latitudeDelta: 0.35, longitudeDelta: 0.35)
+                        ),
+                        animated: false,
+                        on: mapView
+                    )
+                }
                 return
             }
 
-            switch mode {
-            case .idle, .completed:
-                userInterruptedLiveCamera = false
-                mapView.setVisibleMapRect(
-                    MKPolyline(coordinates: presentation.path.map(\.clCoordinate), count: presentation.path.count).boundingMapRect,
-                    edgePadding: UIEdgeInsets(top: 80, left: 34, bottom: 120, right: 34),
-                    animated: true
+            switch cameraMode {
+            case .manual:
+                return
+
+            case .fitRoute:
+                let fitSignature = RouteMapFitSignature(path: presentation.path, bottomPadding: bottomPadding)
+                guard fitSignature != lastFitSignature else { return }
+                lastFitSignature = fitSignature
+                if presentation.path.count == 1, let coordinate = presentation.path.first?.clCoordinate {
+                    setRegion(
+                        MKCoordinateRegion(
+                            center: coordinate,
+                            span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                        ),
+                        animated: !UIAccessibility.isReduceMotionEnabled,
+                        on: mapView
+                    )
+                } else {
+                    let polyline = MKPolyline(coordinates: presentation.path.map(\.clCoordinate), count: presentation.path.count)
+                    setVisibleMapRect(
+                        polyline.boundingMapRect,
+                        edgePadding: UIEdgeInsets(top: 80, left: 34, bottom: max(120, bottomPadding), right: 34),
+                        animated: !UIAccessibility.isReduceMotionEnabled,
+                        on: mapView
+                    )
+                }
+
+            case .followLatest:
+                guard case .live = mode, let last = presentation.path.last else { return }
+                setRegion(
+                    MKCoordinateRegion(
+                        center: last.clCoordinate,
+                        span: MKCoordinateSpan(latitudeDelta: 0.015, longitudeDelta: 0.015)
+                    ),
+                    animated: !UIAccessibility.isReduceMotionEnabled,
+                    on: mapView
                 )
 
-            case .live:
-                guard !userInterruptedLiveCamera, let last = presentation.path.last else { return }
-                let region = MKCoordinateRegion(
-                    center: last.clCoordinate,
-                    span: MKCoordinateSpan(latitudeDelta: 0.015, longitudeDelta: 0.015)
-                )
-                mapView.setRegion(region, animated: true)
-
-            case .replay:
-                if let highlighted = presentation.highlightedCoordinate {
-                    let region = MKCoordinateRegion(
+            case .followReplay:
+                guard case .replay = mode, let highlighted = presentation.highlightedCoordinate else { return }
+                setRegion(
+                    MKCoordinateRegion(
                         center: highlighted.clCoordinate,
                         span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
-                    )
-                    mapView.setRegion(region, animated: false)
-                }
+                    ),
+                    animated: false,
+                    on: mapView
+                )
             }
+        }
+
+        private func setVisibleMapRect(
+            _ rect: MKMapRect,
+            edgePadding: UIEdgeInsets,
+            animated: Bool,
+            on mapView: MKMapView
+        ) {
+            isProgrammaticCameraChange = true
+            mapView.setVisibleMapRect(rect, edgePadding: edgePadding, animated: animated)
+        }
+
+        private func setRegion(
+            _ region: MKCoordinateRegion,
+            animated: Bool,
+            on mapView: MKMapView
+        ) {
+            isProgrammaticCameraChange = true
+            mapView.setRegion(region, animated: animated)
+        }
+
+        private func isUserInteraction(in mapView: MKMapView) -> Bool {
+            mapView.subviews
+                .compactMap(\.gestureRecognizers)
+                .joined()
+                .contains { recognizer in
+                    switch recognizer.state {
+                    case .began, .changed, .ended:
+                        return true
+                    default:
+                        return false
+                    }
+                }
         }
 
         private func accentColor(for type: DrivingEventType) -> Color {
@@ -277,14 +378,44 @@ extension RouteMapView {
     }
 }
 
+private extension RouteMapMode {
+    var kind: RouteMapModeKind {
+        switch self {
+        case .idle:
+            return .idle
+        case .live:
+            return .live
+        case .completed:
+            return .completed
+        case .replay:
+            return .replay
+        }
+    }
+}
+
+private enum RouteMapModeKind: Hashable {
+    case idle
+    case live
+    case completed
+    case replay
+}
+
 private struct RouteMapStaticSignature: Hashable {
     let path: [GeoCoordinate]
     let markers: [RouteMarkerPresentation]
 }
 
 private struct RouteMapDynamicSignature: Hashable {
-    let mode: RouteMapMode
+    let mode: RouteMapModeKind
+    let cameraMode: RouteMapCameraMode
+    let lastCoordinate: GeoCoordinate?
     let highlight: GeoCoordinate?
+    let bottomPadding: CGFloat
+}
+
+private struct RouteMapFitSignature: Hashable {
+    let path: [GeoCoordinate]
+    let bottomPadding: CGFloat
 }
 
 private final class RouteAnnotation: NSObject, MKAnnotation {

@@ -12,6 +12,10 @@ struct BasicMapRenderingService: MapRenderingService {
         await base.presentation(for: trace, events: events)
     }
 
+    func renderRouteSnapshot(_ request: RouteSnapshotRequest) async -> Data? {
+        await base.renderRouteSnapshot(request)
+    }
+
     func renderRouteThumbnail(for trace: [RoutePointSample], events: [DrivingEvent], size: CGSize) async -> Data? {
         await base.renderRouteThumbnail(for: trace, events: events, size: size)
     }

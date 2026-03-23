@@ -23,8 +23,19 @@ struct RoutePresentation: Hashable, Sendable {
     let highlightedCoordinate: GeoCoordinate?
 }
 
+struct RouteSnapshotRequest: Hashable, Sendable {
+    let key: DriveRoutePreviewKey
+    let trace: [RoutePointSample]
+
+    init(driveID: UUID, trace: [RoutePointSample], size: CGSize, style: AppMapStyle) {
+        key = DriveRoutePreviewKey(driveID: driveID, mapStyle: style, size: size)
+        self.trace = trace
+    }
+}
+
 protocol MapRenderingService: Sendable {
     func summary(for trace: [RoutePointSample], events: [DrivingEvent]) async -> DriveSummary
     func presentation(for trace: [RoutePointSample], events: [DrivingEvent]) async -> RoutePresentation
+    func renderRouteSnapshot(_ request: RouteSnapshotRequest) async -> Data?
     func renderRouteThumbnail(for trace: [RoutePointSample], events: [DrivingEvent], size: CGSize) async -> Data?
 }
