@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct RoadTrackApp: App {
+struct VroomApp: App {
     @StateObject private var appState: AppStateStore
 
     init() {

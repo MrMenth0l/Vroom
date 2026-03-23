@@ -8,7 +8,7 @@
       "internalID" : "roadtrack.premium.monthly",
       "localizations" : [
         {
-          "description" : "Monthly premium access for RoadTrack.",
+          "description" : "Monthly premium access for Vroom.",
           "displayName" : "Premium Monthly",
           "locale" : "en_US"
         }
@@ -23,7 +23,7 @@
       "internalID" : "roadtrack.premium.yearly",
       "localizations" : [
         {
-          "description" : "Yearly premium access for RoadTrack.",
+          "description" : "Yearly premium access for Vroom.",
           "displayName" : "Premium Yearly",
           "locale" : "en_US"
         }

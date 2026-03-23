@@ -3,15 +3,15 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>RoadTrack</string>
+	<string>Vroom</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>RoadTrack uses background location to automatically detect and log drives.</string>
+	<string>Vroom uses background location to automatically detect and log drives.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>RoadTrack uses your location during drives to capture routes and driving metrics.</string>
+	<string>Vroom uses your location during drives to capture routes and driving metrics.</string>
 	<key>NSMotionUsageDescription</key>
-	<string>RoadTrack uses motion activity to improve drive detection accuracy and reduce battery impact.</string>
+	<string>Vroom uses motion activity to improve drive detection accuracy and reduce battery impact.</string>
 	<key>NSUserNotificationsUsageDescription</key>
-	<string>RoadTrack can send trip summaries, permission reminders, and important drive updates.</string>
+	<string>Vroom can send trip summaries, permission reminders, and important drive updates.</string>
 	<key>PremiumProductIDs</key>
 	<array>
 		<string>roadtrack.premium.monthly</string>
